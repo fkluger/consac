@@ -1,0 +1,6 @@
+[submodule "datasets/yud_plus"]
+	path = datasets/yud_plus
+	url = https://github.com/fkluger/yud_plus.git
+[submodule "datasets/nyu_vp"]
+	path = datasets/nyu_vp
+	url = https://github.com/fkluger/nyu_vp.git
