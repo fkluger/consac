@@ -97,13 +97,13 @@ for data, num_data, masks, labels, images in valset_loader:
 
     miss_rates = []
 
-    start_time = time.time()
 
     for si in range(opt.runcount):
 
         sampling_times = []
         forward_pass_times = []
 
+        start_time = time.time()
         with torch.no_grad():
             all_inliers = torch.zeros((P, M, S, Y), device=device)
             all_probs = torch.zeros((P, M, Y), device=device)
