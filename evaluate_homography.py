@@ -84,6 +84,12 @@ for data, num_data, masks, labels, images in valset_loader:
 
     bi = 0
 
+    B = data.size(0)
+    Y = data.size(1)
+    M = opt.instances
+    P = opt.outerhyps
+    S = opt.hyps
+
     data = data.to(device)
     num_data = num_data.to(device)
     masks = masks.to(device)
@@ -99,83 +105,87 @@ for data, num_data, masks, labels, images in valset_loader:
         forward_pass_times = []
 
         with torch.no_grad():
-            all_inliers = torch.zeros((opt.outerhyps, opt.instances, opt.hyps, data.size(1)), device=device)
-            all_probs = torch.zeros((opt.outerhyps, opt.instances, data.size(1)), device=device)
-            all_choices = torch.zeros((opt.outerhyps, opt.instances, opt.hyps, data.size(1)), device=device)
-            all_best_choices = torch.zeros((opt.outerhyps, opt.instances, data.size(1)), device=device)
-            all_best_inliers = torch.zeros((opt.outerhyps, opt.instances, data.size(1)), device=device)
-            all_best_inlier_counts_per_model = torch.zeros((opt.outerhyps, opt.instances), device=device)
-            all_best_inlier_counts = torch.zeros(opt.outerhyps, device=device)
-            all_best_hypos = torch.zeros((opt.outerhyps, opt.instances,), device=device, dtype=torch.int)
-            all_models = torch.zeros((opt.outerhyps, opt.instances, opt.hyps, 9), device=device)
-            all_best_models = torch.zeros((opt.outerhyps, opt.instances, 9), device=device)
+            all_inliers = torch.zeros((P, M, S, Y), device=device)
+            all_probs = torch.zeros((P, M, Y), device=device)
+            all_choices = torch.zeros((P, M, S, Y), device=device)
+            all_best_choices = torch.zeros((P, M, Y), device=device)
+            all_best_inliers = torch.zeros((P, M, Y), device=device)
+            all_best_inlier_counts_per_model = torch.zeros((P, M), device=device)
+            all_best_inlier_counts = torch.zeros(P, device=device)
+            all_best_hypos = torch.zeros((P, M,), device=device, dtype=torch.int)
+            all_models = torch.zeros((P, M, S, 9), device=device)
+            all_best_models = torch.zeros((P, M, 9), device=device)
 
-            for oh in range(opt.outerhyps):
+            data_and_state = torch.zeros((P, Y, ddim),
+                                         device=device)
+            for oh in range(P):
+                data_and_state[oh, :, 0:(ddim - 1)] = data[bi, :, 0:(ddim - 1)]
 
-                data_and_state = torch.zeros((data.size(0), data.size(1), ddim),
-                                             device=device)
-                data_and_state[:, :, 0:(ddim - 1)] = data[:, :, 0:(ddim - 1)]
+            uniform_probs = torch.ones((P, num_data[bi]), device=device)
 
-                uniform_probs = torch.ones(num_data[bi], device=device)
+            inliers_so_far = torch.zeros((P, Y), device=device)
 
-                inliers_so_far = torch.zeros((data.size(1),), device=device)
+            for mi in range(M):
 
-                for mi in range(opt.instances):
+                forward_pass_start = time.time()
+                if uniform_sampling:
+                    probs = uniform_probs
+                else:
+                    data = data.to(device)
+                    log_probs = model(data_and_state)
+                    probs = torch.softmax(log_probs[:, 0, 0:num_data[bi], 0], dim=-1)
 
-                    forward_pass_start = time.time()
-                    if uniform_sampling:
-                        probs = uniform_probs
-                    else:
-                        data = data.to(device)
-                        log_probs = model(data_and_state)
-                        probs = torch.softmax(log_probs[bi, 0, 0:num_data[bi], 0], dim=0)
-                        probs /= torch.max(probs)
-                    forward_pass_end = time.time()
-                    forward_pass_time = forward_pass_end - forward_pass_start
-                    forward_pass_times += [forward_pass_time]
+                    for oh in range(P):
+                        probs[oh] /= torch.max(probs[oh])
 
-                    sampling_start = time.time()
+                forward_pass_end = time.time()
+                forward_pass_time = forward_pass_end - forward_pass_start
+                forward_pass_times += [forward_pass_time]
 
-                    all_probs[oh, mi, :num_data[bi]] = probs
+                sampling_start = time.time()
+                all_probs[:, mi, :num_data[bi]] = probs
 
-                    cur_probs = probs.expand((opt.hyps, probs.size(0)))
+                cur_probs = probs.view(P, 1, Y).expand((P, S, Y))
+                models, _, choices, distances = \
+                    sampling.sample_model_pool_multiple_parallel(data[bi], num_data[bi], 4, opt.threshold,
+                                                        sampling.homographies_from_points_parallel,
+                                                        sampling.homographies_consistency_measure, cur_probs,
+                                                        device=device, model_size=9, sample_count=S)
 
-                    models, _, choices, distances = \
-                        sampling.sample_model_pool_multiple(data[bi], num_data[bi], 1, 4, opt.threshold,
-                                                            sampling.homographies_from_points,
-                                                            sampling.homographies_consistency_measure, cur_probs,
-                                                            device=device, model_size=9, sample_count=opt.hyps)
+                sampling_end = time.time()
+                sampling_time = sampling_end - sampling_start
+                sampling_times += [sampling_time]
 
-                    inliers = sampling.soft_inlier_fun(distances.squeeze(), 5. / opt.threshold, opt.threshold)
+                for oh in range(P):
 
-                    all_choices[oh, mi, :] = choices.squeeze()
+                    inliers = sampling.soft_inlier_fun(distances[oh].squeeze(), 5. / opt.threshold, opt.threshold)
+
+                    all_choices[oh, mi, :] = choices[oh].squeeze()
                     all_inliers[oh, mi, :, 0:num_data[bi]] = inliers.squeeze()[:, 0:num_data[bi]]
-                    all_models[oh, mi, :] = models.squeeze()
+                    all_models[oh, mi, :] = models[oh].squeeze()
 
-                    all_inliers_so_far = torch.max(all_inliers[oh, mi], inliers_so_far)
+                    all_inliers_so_far = torch.max(all_inliers[oh, mi], inliers_so_far[oh])
                     all_inlier_counts_so_far = torch.sum(all_inliers_so_far, dim=-1)
 
                     best_hypo = torch.argmax(all_inlier_counts_so_far)
                     all_best_hypos[oh, mi] = best_hypo
-                    all_best_models[oh, mi] = models.squeeze()[best_hypo]
+                    all_best_models[oh, mi] = models[oh].squeeze()[best_hypo]
 
                     if not opt.unconditional:
-                        data_and_state[bi, 0:num_data[bi], (ddim - 1)] = torch.max(
+                        data_and_state[oh, 0:num_data[bi], (ddim - 1)] = torch.max(
                             all_inliers[oh, mi, best_hypo, 0:num_data[bi]],
-                            data_and_state[bi, 0:num_data[bi], (ddim - 1)])
+                            data_and_state[oh, 0:num_data[bi], (ddim - 1)])
 
                     all_best_choices[oh, mi] = all_choices[oh, mi, best_hypo]
 
-                    inliers_so_far = all_inliers_so_far[best_hypo]
+                    inliers_so_far[oh] = all_inliers_so_far[best_hypo]
 
-                    uniform_probs = torch.min(uniform_probs, 1 - all_inliers[oh, mi, best_hypo, 0:num_data[bi]])
+                    uniform_probs[oh] = torch.min(uniform_probs[oh], 1 - all_inliers[oh, mi, best_hypo, 0:num_data[bi]])
 
-                    sampling_end = time.time()
-                    sampling_time = sampling_end - sampling_start
-                    sampling_times += [sampling_time]
 
+            for oh in range(P):
                 inlier_list = []
-                for mi in range(opt.instances):
+                for mi in range(M):
                     best_hypo = all_best_hypos[oh, mi]
                     inliers = all_inliers[oh, mi, best_hypo]
                     inlier_list += [inliers]
@@ -184,7 +194,7 @@ for data, num_data, masks, labels, images in valset_loader:
 
                 joint_inliers = torch.zeros(best_inliers.size(), device=device)
                 joint_inliers[0] = best_inliers[0]
-                for mi in range(1, opt.instances):
+                for mi in range(1, M):
                     joint_inliers[mi] = torch.max(joint_inliers[mi - 1], best_inliers[mi])
                 cumulative_inlier_counts = torch.sum(joint_inliers, dim=-1)
                 average_cumulative_inlier_count = torch.mean(cumulative_inlier_counts)
@@ -214,12 +224,12 @@ for data, num_data, masks, labels, images in valset_loader:
             refined_models.squeeze_(0)
             posterior.squeeze_(0)
         else:
-            refined_models = torch.zeros((opt.instances, 9))
+            refined_models = torch.zeros((M, 9))
         em_end = time.time()
         em_time = em_end-em_start
 
-        refined_inliers = torch.zeros((opt.instances, data.size(1)))
-        for mi in range(opt.instances):
+        refined_inliers = torch.zeros((M, Y))
+        for mi in range(M):
             inliers = all_best_inliers[best_outer_hypo, mi]
             inlier_indices = torch.nonzero(inliers)
             if opt.em:
@@ -235,8 +245,8 @@ for data, num_data, masks, labels, images in valset_loader:
 
         last_inlier_count = 0
         selected_instances = 0
-        joint_inliers = torch.zeros((data.size(1),))
-        for mi in range(opt.instances):
+        joint_inliers = torch.zeros((Y,))
+        for mi in range(M):
             joint_inliers = torch.max(joint_inliers, refined_inliers[mi, :])
             inlier_count = torch.sum(joint_inliers, dim=-1)
             new_inliers = inlier_count - last_inlier_count
@@ -364,7 +374,7 @@ for data, num_data, masks, labels, images in valset_loader:
             if len(wrong_min_dists) > 0:
                 print(np.max(wrong_min_dists))
 
-            for mi in range(opt.instances):
+            for mi in range(M):
 
                 cmap = plt.get_cmap('GnBu')
                 ax = plt.subplot2grid((3, 6), (1, mi))

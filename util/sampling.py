@@ -1,6 +1,9 @@
 import torch
 import numpy as np
-
+import time
+from scipy.sparse.linalg import svds
+from numpy.linalg import svd
+import multiprocessing as mp
 
 def sigmoid(x):
     return 1. / (1. + torch.exp(-x))
@@ -58,6 +61,42 @@ def sample_model_pool_multiple(data, num_data, num_hypotheses, cardinality, thre
     return all_models, all_inliers, all_choice_vec, all_distances
 
 
+def sample_model_pool_multiple_parallel(data, num_data, cardinality, threshold, model_gen_fun, consistency_fun,
+                               probs=None, device=None, replacement=False, model_size=3, sample_count=1, min_prob=0.):
+
+    Y = data.size(0)
+    P = probs.size(0)
+    S = probs.size(1)
+
+    all_models = torch.zeros((P, S, model_size), device=device)
+    all_inliers = torch.zeros((P, S, Y), device=device)
+    all_distances = torch.zeros((P, S, Y), device=device)
+    all_choice_vec = torch.zeros((P, S, Y), device=device)
+
+    # for pi in range(P):
+    #     cur_probs = None if probs is None else probs[pi]
+    #
+    #     model, choice_vec, inliers, inlier_count, distances = sample_models(data, num_data, threshold, cardinality,
+    #                                                                         sample_count, cur_probs, model_gen_fun,
+    #                                                                         consistency_fun, device,
+    #                                                                         replacement=replacement, min_prob=min_prob)
+    #     all_inliers[pi, :, 0:num_data] = inliers
+    #     all_distances[pi, :, 0:num_data] = distances
+    #     all_choice_vec[pi] = choice_vec
+    #     all_models[pi] = model
+    #
+    # return all_models, all_inliers, all_choice_vec, all_distances
+    #
+    cur_probs = None if probs is None else probs
+
+    models, choice_vec, inliers, inlier_count, distances = sample_models_parallel(data, num_data, threshold, cardinality,
+                                                                            sample_count, cur_probs, model_gen_fun,
+                                                                            consistency_fun, device,
+                                                                            replacement=replacement, min_prob=min_prob)
+    return models, inliers, choice_vec, distances
+
+
+
 def sample_model(data, num_data, threshold, cardinality, probs, model_gen_fun, consistency_fun, device=None,
                  replacement=False, min_prob=0.):
     if probs is None:
@@ -95,6 +134,52 @@ def sample_models(data, num_data, threshold, cardinality, sample_count, probs, m
     inliers, inlier_count, distances = count_inliers(data[0:num_data, :], models, threshold, consistency_fun, device)
 
     return models, choice_vec, inliers, inlier_count, distances
+
+
+def sample_models_parallel(data, num_data, threshold, cardinality, sample_count, probs, model_gen_fun, consistency_fun,
+                  device=None, replacement=False, min_prob=0.):
+
+    # probs: P x S x Y
+    sampling_start = time.time()
+
+    P = probs.size(0)
+    S = probs.size(1)
+    Y = probs.size(2)
+    choice_vec = torch.zeros((P, S, Y), device=device)
+    choices = torch.zeros((P, S, cardinality), device=device, dtype=torch.long)
+    for pi in range(P):
+        choice_weights = probs[pi, :, 0:num_data] + min_prob
+        choice = torch.multinomial(choice_weights, cardinality, replacement=replacement)
+        choices[pi] = choice
+
+        for si in range(S):
+            choice_vec[pi, si, choice[si]] = 1
+
+    sampling_end = time.time()
+
+    models = model_gen_fun(data, choices, device, sample_count=sample_count)
+
+    model_gen_end = time.time()
+
+    # all_models = torch.zeros((P, S, model_size), device=device)
+    all_inliers = torch.zeros((P, S, Y), device=device)
+    all_distances = torch.zeros((P, S, Y), device=device)
+    all_counts = torch.zeros((P, S), device=device)
+    for pi in range(P):
+        inliers, inlier_count, distances = count_inliers(data[0:num_data, :], models[pi], threshold, consistency_fun, device)
+        all_inliers[pi] = inliers
+        all_counts[pi] = inlier_count
+        all_distances[pi] = distances
+
+
+    inlier_count_end = time.time()
+
+    # print("sampling: ", sampling_end-sampling_start)
+    # print("modelgen: ", model_gen_end-sampling_end)
+    # print("counting: ", inlier_count_end-model_gen_end)
+
+    return models, choice_vec, all_inliers, all_counts, all_distances
+    # return models, choice_vec, inliers, inlier_count, distances
 
 
 def count_inliers(data, model, threshold, consistency_fun, device=None):
@@ -182,6 +267,38 @@ def homographies_from_points(data, choice, device, n_matches=4, sample_count=1):
 
     u, s, v = torch.svd(A.cpu())
     h = v[:, :, -1].to(device)
+    # u, s, v = torch.svd(A)
+    # h = v[:, :, -1]
+
+    return h
+
+def multiple_svds(matrix):
+    u, s, v = torch.svd(matrix)
+    h = v[:, :, -1]
+    return h
+
+def homographies_from_points_parallel(data, choice, device, n_matches=4, sample_count=1):
+    P = choice.size(0)
+    S = choice.size(1)
+
+    A = torch.zeros((P, S, 2 * n_matches + 1, 9), device=device)
+    for i in range(n_matches):
+        A[:, :, 2 * i, 5] = -1
+        A[:, :, 2 * i + 1, 2] = 1
+        A[:, :, 2 * i, 3:5] = data[choice[:, :, i], 0:2] * (-1)
+        A[:, :, 2 * i, 6:8] = data[choice[:, :, i], 0:2]
+        A[:, :, 2 * i, 6] *= data[choice[:, :, i], 3]
+        A[:, :, 2 * i, 7] *= data[choice[:, :, i], 3]
+        A[:, :, 2 * i, 8] = data[choice[:, :, i], 3]
+        A[:, :, 2 * i + 1, 0:2] = data[choice[:, :, i], 0:2]
+        A[:, :, 2 * i + 1, 6:8] = data[choice[:, :, i], 0:2] * (-1)
+        A[:, :, 2 * i + 1, 6] *= data[choice[:, :, i], 2]
+        A[:, :, 2 * i + 1, 7] *= data[choice[:, :, i], 2]
+        A[:, :, 2 * i + 1, 8] = -data[choice[:, :, i], 2]
+
+    u, s, v = torch.svd(A.cpu())
+    h = v[:, :, :, -1].to(device)
+
     return h
 
 
@@ -250,6 +367,7 @@ def homographies_consistency_measure(h, data, device):
     distances = distances_1 + distances_2
 
     return distances
+
 
 
 def line_consistency_measure(line, data, device):
