@@ -59,6 +59,8 @@ ddim = 5
 model = CNNet(opt.resblocks, ddim, batch_norm=False)
 model = model.to(device)
 
+inlier_fun1 = sampling.soft_inlier_fun_gen(5. / opt.threshold, opt.threshold)
+
 if not opt.uniform:
     checkpoint = torch.load(opt.ckpt, map_location=lambda storage, loc: storage)
     model.load_state_dict(checkpoint, strict=True)
@@ -102,17 +104,18 @@ for data, num_data, masks, labels, images in valset_loader:
 
         sampling_times = []
         forward_pass_times = []
+        tensor_times = []
+        pp1_times = []
+        pp2_times = []
 
         start_time = time.time()
         with torch.no_grad():
+            tensors_start = time.time()
             all_inliers = torch.zeros((P, M, S, Y), device=device)
             all_probs = torch.zeros((P, M, Y), device=device)
-            all_choices = torch.zeros((P, M, S, Y), device=device)
-            all_best_choices = torch.zeros((P, M, Y), device=device)
             all_best_inliers = torch.zeros((P, M, Y), device=device)
-            all_best_inlier_counts_per_model = torch.zeros((P, M), device=device)
             all_best_inlier_counts = torch.zeros(P, device=device)
-            all_best_hypos = torch.zeros((P, M,), device=device, dtype=torch.int)
+            all_best_hypos = torch.zeros((P, M,), device=device, dtype=torch.long)
             all_models = torch.zeros((P, M, S, 9), device=device)
             all_best_models = torch.zeros((P, M, 9), device=device)
 
@@ -125,6 +128,10 @@ for data, num_data, masks, labels, images in valset_loader:
 
             inliers_so_far = torch.zeros((P, Y), device=device)
 
+            tensors_end = time.time()
+            tensor_time = tensors_end-tensors_start
+            tensor_times += [tensor_time]
+
             for mi in range(M):
 
                 forward_pass_start = time.time()
@@ -135,9 +142,6 @@ for data, num_data, masks, labels, images in valset_loader:
                     log_probs = model(data_and_state)
                     probs = torch.softmax(log_probs[:, 0, 0:num_data[bi], 0], dim=-1)
 
-                    for oh in range(P):
-                        probs[oh] /= torch.max(probs[oh])
-
                 forward_pass_end = time.time()
                 forward_pass_time = forward_pass_end - forward_pass_start
                 forward_pass_times += [forward_pass_time]
@@ -146,23 +150,21 @@ for data, num_data, masks, labels, images in valset_loader:
                 all_probs[:, mi, :num_data[bi]] = probs
 
                 cur_probs = probs.view(P, 1, Y).expand((P, S, Y))
-                models, _, choices, distances = \
-                    sampling.sample_model_pool_multiple_parallel(data[bi], num_data[bi], 4, opt.threshold,
+                models, inliers, choices, distances = \
+                    sampling.sample_model_pool_multiple_parallel(data[bi], num_data[bi], 4, inlier_fun1,
                                                         sampling.homographies_from_points_parallel,
-                                                        sampling.homographies_consistency_measure, cur_probs,
+                                                        sampling.homographies_consistency_measure_parallel, cur_probs,
                                                         device=device, model_size=9, sample_count=S)
 
                 sampling_end = time.time()
                 sampling_time = sampling_end - sampling_start
                 sampling_times += [sampling_time]
 
+                pp1_start = time.time()
+                all_inliers[:, mi, :, 0:num_data[bi]] = inliers.squeeze()[:, 0:num_data[bi]]
+                all_models[:, mi, :] = models.squeeze()
+
                 for oh in range(P):
-
-                    inliers = sampling.soft_inlier_fun(distances[oh].squeeze(), 5. / opt.threshold, opt.threshold)
-
-                    all_choices[oh, mi, :] = choices[oh].squeeze()
-                    all_inliers[oh, mi, :, 0:num_data[bi]] = inliers.squeeze()[:, 0:num_data[bi]]
-                    all_models[oh, mi, :] = models[oh].squeeze()
 
                     all_inliers_so_far = torch.max(all_inliers[oh, mi], inliers_so_far[oh])
                     all_inlier_counts_so_far = torch.sum(all_inliers_so_far, dim=-1)
@@ -175,14 +177,18 @@ for data, num_data, masks, labels, images in valset_loader:
                         data_and_state[oh, 0:num_data[bi], (ddim - 1)] = torch.max(
                             all_inliers[oh, mi, best_hypo, 0:num_data[bi]],
                             data_and_state[oh, 0:num_data[bi], (ddim - 1)])
-
-                    all_best_choices[oh, mi] = all_choices[oh, mi, best_hypo]
+                    else:
+                        uniform_probs[oh] = torch.min(uniform_probs[oh], 1 - all_inliers[oh, mi, best_hypo, 0:num_data[bi]])
 
                     inliers_so_far[oh] = all_inliers_so_far[best_hypo]
 
-                    uniform_probs[oh] = torch.min(uniform_probs[oh], 1 - all_inliers[oh, mi, best_hypo, 0:num_data[bi]])
+
+                pp1_end = time.time()
+                pp1_time = pp1_end - pp1_start
+                pp1_times += [pp1_time]
 
 
+            pp2_start = time.time()
             for oh in range(P):
                 inlier_list = []
                 for mi in range(M):
@@ -203,14 +209,12 @@ for data, num_data, masks, labels, images in valset_loader:
                 best_inliers, best_inlier_idx = torch.max(best_inliers, dim=0)
                 best_inlier_count = torch.sum(best_inliers)
                 all_best_inlier_counts[oh] = average_cumulative_inlier_count
-                for li in range(best_inliers.size(0)):
-                    mi = best_inlier_idx[li]
-                    inl = best_inliers[li]
-                    all_best_inlier_counts_per_model[oh, mi] += inl
 
             best_outer_hypo = torch.argmax(all_best_inlier_counts)
+            pp2_end = time.time()
+            pp2_time = pp2_end - pp2_start
+            pp2_times += [pp2_time]
 
-        best_choices = all_best_choices[best_outer_hypo]
         best_models = all_best_models[best_outer_hypo]
 
         all_probs_np = all_probs.cpu().numpy()
@@ -259,10 +263,13 @@ for data, num_data, masks, labels, images in valset_loader:
             estm_models += [refined_models[mi].cpu().numpy()]
 
         end_time = time.time()
-        
+
+        me_start = time.time()
         estm_models = np.vstack(estm_models)
         estm_labels, miss_rate = calc_labels_and_misclassification_error(data[bi], selected_instances, estm_models,
-                                                                         opt.threshold, labels[bi])
+                                                                           opt.threshold, labels[bi])
+        me_end = time.time()
+        me_time = me_end-me_start
 
         print("miss. rate: %.2f" % (miss_rate * 100))
         all_miss_rates += [miss_rate * 100.]
@@ -273,11 +280,22 @@ for data, num_data, masks, labels, images in valset_loader:
 
         num_forward_passes = len(forward_pass_times)
         num_sampling = len(sampling_times)
+        num_tensor_allocs = len(tensor_times)
+        num_pp1 = len(pp1_times)
+        num_pp2 = len(pp2_times)
         avg_forward_pass_time = np.mean(forward_pass_times)
         avg_sampling_time = np.mean(sampling_times)
-        print("%d forward passes (%.4f seconds)" % (num_forward_passes, avg_forward_pass_time))
-        print("%d sampling passes (%.4f seconds)" % (num_sampling, avg_sampling_time))
-        print("EM time: %.4f seconds" % em_time)
+        avg_tensor_time = np.mean(tensor_times)
+        avg_pp1_time = np.mean(pp1_times)
+        avg_pp2_time = np.mean(pp2_times)
+
+        # print("%d tensor allocs (%.4f seconds)" % (num_tensor_allocs, avg_tensor_time))
+        # print("%d forward passes (%.4f seconds)" % (num_forward_passes, avg_forward_pass_time))
+        # print("%d sampling passes (%.4f seconds)" % (num_sampling, avg_sampling_time))
+        # print("%d PP1 passes (%.4f seconds)" % (num_pp1, avg_pp1_time))
+        # print("%d PP2 passes (%.4f seconds)" % (num_pp2, avg_pp2_time))
+        # print("EM time: %.4f seconds" % em_time)
+        # print("ME time: %.4f seconds" % me_time)
 
         avg_forward_pass_times += [avg_forward_pass_time]
         avg_sampling_times += [avg_sampling_time]

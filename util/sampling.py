@@ -1,12 +1,15 @@
 import torch
 import numpy as np
 import time
-from scipy.sparse.linalg import svds
-from numpy.linalg import svd
-import multiprocessing as mp
 
 def sigmoid(x):
     return 1. / (1. + torch.exp(-x))
+
+
+def soft_inlier_fun_gen(beta, tau):
+    def f(d):
+        return 1 - sigmoid(beta * d - beta * tau)
+    return f
 
 
 def soft_inlier_fun(d, beta, tau):
@@ -17,7 +20,7 @@ def hard_inlier_fun(d, thresh):
     return torch.where(d < thresh, torch.ones_like(d), torch.zeros_like(d))
 
 
-def sample_model_pool(data, num_data, num_hypotheses, cardinality, threshold, model_gen_fun, consistency_fun,
+def sample_model_pool(data, num_data, num_hypotheses, cardinality, inlier_fun, model_gen_fun, consistency_fun,
                       probs=None, device=None, replacement=False, model_size=3, min_prob=0.):
     all_models = torch.zeros((num_hypotheses, model_size), device=device)
     all_inliers = torch.zeros((num_hypotheses, data.shape[0]), device=device)
@@ -27,7 +30,7 @@ def sample_model_pool(data, num_data, num_hypotheses, cardinality, threshold, mo
     for hi in range(num_hypotheses):
         cur_probs = None if probs is None else probs
 
-        model, choice_vec, inliers, inlier_count, distances = sample_model(data, num_data, threshold, cardinality,
+        model, choice_vec, inliers, inlier_count, distances = sample_model(data, num_data, inlier_fun, cardinality,
                                                                            cur_probs, model_gen_fun, consistency_fun,
                                                                            device, replacement=replacement,
                                                                            min_prob=min_prob)
@@ -39,7 +42,7 @@ def sample_model_pool(data, num_data, num_hypotheses, cardinality, threshold, mo
     return all_models, all_inliers, all_choice_vec, all_distances
 
 
-def sample_model_pool_multiple(data, num_data, num_hypotheses, cardinality, threshold, model_gen_fun, consistency_fun,
+def sample_model_pool_multiple(data, num_data, num_hypotheses, cardinality, inlier_fun, model_gen_fun, consistency_fun,
                                probs=None, device=None, replacement=False, model_size=3, sample_count=1, min_prob=0.):
     all_models = torch.zeros((num_hypotheses, sample_count, model_size), device=device)
     all_inliers = torch.zeros((num_hypotheses, sample_count, data.shape[0]), device=device)
@@ -49,7 +52,7 @@ def sample_model_pool_multiple(data, num_data, num_hypotheses, cardinality, thre
     for hi in range(num_hypotheses):
         cur_probs = None if probs is None else probs
 
-        model, choice_vec, inliers, inlier_count, distances = sample_models(data, num_data, threshold, cardinality,
+        model, choice_vec, inliers, inlier_count, distances = sample_models(data, num_data, inlier_fun, cardinality,
                                                                             sample_count, cur_probs, model_gen_fun,
                                                                             consistency_fun, device,
                                                                             replacement=replacement, min_prob=min_prob)
@@ -61,35 +64,16 @@ def sample_model_pool_multiple(data, num_data, num_hypotheses, cardinality, thre
     return all_models, all_inliers, all_choice_vec, all_distances
 
 
-def sample_model_pool_multiple_parallel(data, num_data, cardinality, threshold, model_gen_fun, consistency_fun,
+def sample_model_pool_multiple_parallel(data, num_data, cardinality, inlier_fun, model_gen_fun, consistency_fun,
                                probs=None, device=None, replacement=False, model_size=3, sample_count=1, min_prob=0.):
 
     Y = data.size(0)
     P = probs.size(0)
     S = probs.size(1)
 
-    all_models = torch.zeros((P, S, model_size), device=device)
-    all_inliers = torch.zeros((P, S, Y), device=device)
-    all_distances = torch.zeros((P, S, Y), device=device)
-    all_choice_vec = torch.zeros((P, S, Y), device=device)
-
-    # for pi in range(P):
-    #     cur_probs = None if probs is None else probs[pi]
-    #
-    #     model, choice_vec, inliers, inlier_count, distances = sample_models(data, num_data, threshold, cardinality,
-    #                                                                         sample_count, cur_probs, model_gen_fun,
-    #                                                                         consistency_fun, device,
-    #                                                                         replacement=replacement, min_prob=min_prob)
-    #     all_inliers[pi, :, 0:num_data] = inliers
-    #     all_distances[pi, :, 0:num_data] = distances
-    #     all_choice_vec[pi] = choice_vec
-    #     all_models[pi] = model
-    #
-    # return all_models, all_inliers, all_choice_vec, all_distances
-    #
     cur_probs = None if probs is None else probs
 
-    models, choice_vec, inliers, inlier_count, distances = sample_models_parallel(data, num_data, threshold, cardinality,
+    models, choice_vec, inliers, inlier_count, distances = sample_models_parallel(data, num_data, inlier_fun, cardinality,
                                                                             sample_count, cur_probs, model_gen_fun,
                                                                             consistency_fun, device,
                                                                             replacement=replacement, min_prob=min_prob)
@@ -97,7 +81,7 @@ def sample_model_pool_multiple_parallel(data, num_data, cardinality, threshold, 
 
 
 
-def sample_model(data, num_data, threshold, cardinality, probs, model_gen_fun, consistency_fun, device=None,
+def sample_model(data, num_data, inlier_fun, cardinality, probs, model_gen_fun, consistency_fun, device=None,
                  replacement=False, min_prob=0.):
     if probs is None:
         choice_weights = torch.ones(num_data, device=device)
@@ -111,12 +95,12 @@ def sample_model(data, num_data, threshold, cardinality, probs, model_gen_fun, c
 
     model = model_gen_fun(data, choice, device)
 
-    inliers, inlier_count, distances = count_inliers(data[0:num_data, :], model, threshold, consistency_fun, device)
+    inliers, inlier_count, distances = count_inliers(data[0:num_data, :], model, inlier_fun, consistency_fun, device)
 
     return model, choice_vec, inliers, inlier_count, distances
 
 
-def sample_models(data, num_data, threshold, cardinality, sample_count, probs, model_gen_fun, consistency_fun,
+def sample_models(data, num_data, inlier_fun, cardinality, sample_count, probs, model_gen_fun, consistency_fun,
                   device=None, replacement=False, min_prob=0.):
     if probs is None:
         choice_weights = torch.ones((sample_count, num_data), device=device)
@@ -131,17 +115,13 @@ def sample_models(data, num_data, threshold, cardinality, sample_count, probs, m
 
     models = model_gen_fun(data, choice, device, sample_count=sample_count)
 
-    inliers, inlier_count, distances = count_inliers(data[0:num_data, :], models, threshold, consistency_fun, device)
+    inliers, inlier_count, distances = count_inliers(data[0:num_data, :], models, inlier_fun, consistency_fun, device)
 
     return models, choice_vec, inliers, inlier_count, distances
 
 
-def sample_models_parallel(data, num_data, threshold, cardinality, sample_count, probs, model_gen_fun, consistency_fun,
+def sample_models_parallel(data, num_data, inlier_fun, cardinality, sample_count, probs, model_gen_fun, consistency_fun,
                   device=None, replacement=False, min_prob=0.):
-
-    # probs: P x S x Y
-    sampling_start = time.time()
-
     P = probs.size(0)
     S = probs.size(1)
     Y = probs.size(2)
@@ -151,41 +131,19 @@ def sample_models_parallel(data, num_data, threshold, cardinality, sample_count,
         choice_weights = probs[pi, :, 0:num_data] + min_prob
         choice = torch.multinomial(choice_weights, cardinality, replacement=replacement)
         choices[pi] = choice
-
-        for si in range(S):
-            choice_vec[pi, si, choice[si]] = 1
-
-    sampling_end = time.time()
+        choice_vec[pi, :, choice] = 1
 
     models = model_gen_fun(data, choices, device, sample_count=sample_count)
 
-    model_gen_end = time.time()
-
-    # all_models = torch.zeros((P, S, model_size), device=device)
-    all_inliers = torch.zeros((P, S, Y), device=device)
-    all_distances = torch.zeros((P, S, Y), device=device)
-    all_counts = torch.zeros((P, S), device=device)
-    for pi in range(P):
-        inliers, inlier_count, distances = count_inliers(data[0:num_data, :], models[pi], threshold, consistency_fun, device)
-        all_inliers[pi] = inliers
-        all_counts[pi] = inlier_count
-        all_distances[pi] = distances
-
-
-    inlier_count_end = time.time()
-
-    # print("sampling: ", sampling_end-sampling_start)
-    # print("modelgen: ", model_gen_end-sampling_end)
-    # print("counting: ", inlier_count_end-model_gen_end)
+    all_inliers, all_counts, all_distances = \
+        count_inliers(data[0:num_data, :], models, inlier_fun, consistency_fun, device)
 
     return models, choice_vec, all_inliers, all_counts, all_distances
-    # return models, choice_vec, inliers, inlier_count, distances
 
 
-def count_inliers(data, model, threshold, consistency_fun, device=None):
+def count_inliers(data, model, inlier_fun, consistency_fun, device=None):
     distances = consistency_fun(model, data, device)
-    inliers = torch.where(distances < threshold, torch.ones_like(distances, device=device),
-                          torch.zeros_like(distances, device=device))
+    inliers = inlier_fun(distances)
     inlier_count = inliers.sum(-1)
 
     return inliers, inlier_count, distances
@@ -267,15 +225,15 @@ def homographies_from_points(data, choice, device, n_matches=4, sample_count=1):
 
     u, s, v = torch.svd(A.cpu())
     h = v[:, :, -1].to(device)
-    # u, s, v = torch.svd(A)
-    # h = v[:, :, -1]
 
     return h
+
 
 def multiple_svds(matrix):
     u, s, v = torch.svd(matrix)
     h = v[:, :, -1]
     return h
+
 
 def homographies_from_points_parallel(data, choice, device, n_matches=4, sample_count=1):
     P = choice.size(0)
@@ -296,7 +254,8 @@ def homographies_from_points_parallel(data, choice, device, n_matches=4, sample_
         A[:, :, 2 * i + 1, 7] *= data[choice[:, :, i], 2]
         A[:, :, 2 * i + 1, 8] = -data[choice[:, :, i], 2]
 
-    u, s, v = torch.svd(A.cpu())
+    B = A.cpu()
+    u, s, v = torch.svd(B)
     h = v[:, :, :, -1].to(device)
 
     return h
@@ -368,6 +327,40 @@ def homographies_consistency_measure(h, data, device):
 
     return distances
 
+
+def homographies_consistency_measure_parallel(h, data, device):
+    P = h.size(0)
+    S = h.size(1)
+
+    H = h.view(P, S, 1, 3, 3)
+    I = torch.eye(3, device=device).view(1, 1, 1, 3, 3).expand(H.size(0), H.size(1), H.size(2), 3, 3)
+    det = torch.det(H).view(P, S, 1, 1, 1)
+    H_ = torch.where(det < 1e-12, I, H)
+    Hinv = torch.inverse(H_)
+    x1 = data[:, 0:2]
+    x2 = data[:, 2:4]
+    X1 = torch.ones((1, 1, data.size(0), 3, 1), device=device)
+    X2 = torch.ones((1, 1, data.size(0), 3, 1), device=device)
+    X1[0, 0, :, 0:2, 0] = x1
+    X2[0, 0, :, 0:2, 0] = x2
+
+    HX1 = torch.matmul(H, X1)
+    HX1[:, :, :, 0, 0] /= torch.clamp(HX1[:, :, :, 2, 0], min=1e-8)
+    HX1[:, :, :, 1, 0] /= torch.clamp(HX1[:, :, :, 2, 0], min=1e-8)
+    HX1[:, :, :, 2, 0] /= torch.clamp(HX1[:, :, :, 2, 0], min=1e-8)
+    HX2 = torch.matmul(Hinv, X2)
+    HX2[:, :, :, 0, 0] /= torch.clamp(HX2[:, :, :, 2, 0], min=1e-8)
+    HX2[:, :, :, 1, 0] /= torch.clamp(HX2[:, :, :, 2, 0], min=1e-8)
+    HX2[:, :, :, 2, 0] /= torch.clamp(HX2[:, :, :, 2, 0], min=1e-8)
+
+    signed_distances_1 = HX1 - X2
+    distances_1 = (signed_distances_1 * signed_distances_1).sum(dim=3).squeeze()
+    signed_distances_2 = HX2 - X1
+    distances_2 = (signed_distances_2 * signed_distances_2).sum(dim=3).squeeze()
+
+    distances = distances_1 + distances_2
+
+    return distances
 
 
 def line_consistency_measure(line, data, device):

@@ -72,6 +72,8 @@ all_losses = []
 
 uniform_sampling = opt.uniform
 
+inlier_fun = sampling.soft_inlier_fun_gen(5. / opt.threshold, opt.threshold)
+
 idx = 0
 
 all_aucs = []
@@ -135,7 +137,7 @@ for ri in range(opt.runcount):
                     for hi in range(opt.hyps):
                         estm_line, choice_vec, _, inlier_count, distances = \
                             sampling.sample_model(
-                                data[bi], num_data[bi], opt.threshold, 2, probs, sampling.vp_from_lines,
+                                data[bi], num_data[bi], inlier_fun, 2, probs, sampling.vp_from_lines,
                                 sampling.vp_consistency_measure_angle, device=device)
 
                         inliers = sampling.soft_inlier_fun(distances, 5. / opt.threshold, opt.threshold)

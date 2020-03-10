@@ -93,6 +93,8 @@ if opt.load is not None:
     model.load_state_dict(torch.load(opt.load))
 model = model.to(device)
 
+inlier_fun = sampling.soft_inlier_fun_gen(5. / opt.threshold, opt.threshold)
+
 optimizer = optim.Adam(model.parameters(), lr=opt.learningrate, eps=1e-4, weight_decay=1e-4)
 
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -157,7 +159,7 @@ for epoch in range(0, opt.epochs):
 
                             cur_probs = torch.softmax(log_probs[bi, :, 0:num_data[bi]].squeeze(), dim=-1)
 
-                            models, inliers, choices, distances = sampling.sample_model_pool(data[bi], num_data[bi], opt.hyps, minimal_set_size, opt.threshold, sampling.homography_from_points, sampling.homography_consistency_measure, cur_probs, device=device, model_size=model_dim)
+                            models, inliers, choices, distances = sampling.sample_model_pool(data[bi], num_data[bi], opt.hyps, minimal_set_size, inlier_fun, sampling.homography_from_points, sampling.homography_consistency_measure, cur_probs, device=device, model_size=model_dim)
 
                             all_grads[oh, :,mi, bi] = choices
 
