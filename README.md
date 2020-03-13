@@ -35,6 +35,10 @@ python setup.py build_ext --inplace
 cd ../../yud_plus/lsd
 python setup.py build_ext --inplace
 ```
+For the demo, OpenCV is required as well:
+```
+pip install opencv-contrib-python
+```
 
 ## Datasets
 ### NYU-VP
@@ -70,7 +74,13 @@ rm traindata.tar.gz
 Refer to the NG-RANSAC documentation for details about the dataset.
 
 ## Demo
-...coming soon
+For a homography estimation demo, run:
+```
+python demo.py --img1 demo/img1.jpg  --img2 demo/img2.jpg 
+```
+You should get a result similar to this:
+![example result](demo/example_result.jpg)
+You can also use your own images as input. Check ```python demo.py --help``` for a list of user-definable parameters.
 
 ## Evaluation
 In order to repeat the main experiments from our paper using pre-trained neural networks, you can simply run the following commands:

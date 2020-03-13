@@ -144,3 +144,28 @@ def calc_labels_and_misclassification_error(data, num_estm_instances, estm_model
     miss_rate = num_false * 1. / (num_false + num_correct)
 
     return assigned_labels, miss_rate
+
+
+def calc_labels(data, num_estm_instances, estm_models, threshold):
+
+    is_inlier = np.zeros((data.size(0),), dtype=np.int)
+    estm_label = np.zeros((data.size(0),), dtype=np.int)
+    min_dists = np.ones((data.size(0),)) * 100000
+    transformed_points = []
+
+    for mi in range(num_estm_instances):
+        h = torch.from_numpy(estm_models[mi])
+        distances, HX1 = sampling.homography_consistency_measure(h, data, None, return_transformed=True)
+        distances = distances.cpu().numpy()
+        HX1 = HX1.cpu().numpy()
+        transformed_points += [HX1]
+        for di in range(distances.shape[0]):
+            if distances[di] < threshold and distances[di] < min_dists[di]:
+                estm_label[di] = mi
+                is_inlier[di] = 1
+            min_dists[di] = distances[di] if distances[di] < min_dists[di] else min_dists[di]
+
+    estm_labels = estm_label + 1
+    estm_labels *= is_inlier
+
+    return estm_labels
