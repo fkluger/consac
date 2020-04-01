@@ -265,7 +265,7 @@ for epoch in range(0, opt.epochs):
 
                     models, inliers, choices, distances = \
                         sampling.sample_model_pool_multiple(data[bi], num_data[bi], opt.hyps, minimal_set_size,
-                                                            opt.threshold, sampling.homographies_from_points,
+                                                            inlier_fun, sampling.homographies_from_points,
                                                             sampling.homographies_consistency_measure, cur_probs,
                                                             device=device, model_size=model_dim,
                                                             sample_count=opt.samplecount, min_prob=opt.min_prob)
