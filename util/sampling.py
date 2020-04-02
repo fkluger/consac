@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import time
 
+
 def sigmoid(x):
     return 1. / (1. + torch.exp(-x))
 
@@ -67,10 +68,6 @@ def sample_model_pool_multiple(data, num_data, num_hypotheses, cardinality, inli
 def sample_model_pool_multiple_parallel(data, num_data, cardinality, inlier_fun, model_gen_fun, consistency_fun,
                                probs=None, device=None, replacement=False, model_size=3, sample_count=1, min_prob=0.):
 
-    Y = data.size(0)
-    P = probs.size(0)
-    S = probs.size(1)
-
     cur_probs = None if probs is None else probs
 
     models, choice_vec, inliers, inlier_count, distances = sample_models_parallel(data, num_data, inlier_fun, cardinality,
@@ -79,6 +76,14 @@ def sample_model_pool_multiple_parallel(data, num_data, cardinality, inlier_fun,
                                                                             replacement=replacement, min_prob=min_prob)
     return models, inliers, choice_vec, distances
 
+
+def sample_model_pool_multiple_parallel_batched(data, num_data, cardinality, inlier_fun, model_gen_fun, consistency_fun,
+                               probs=None, device=None, replacement=False, model_size=3, sample_count=1, min_prob=0.):
+
+    models, choice_vec, inliers, inlier_count, distances = \
+        sample_models_parallel_batched(data, num_data, inlier_fun, cardinality, sample_count, probs, model_gen_fun,
+                                       consistency_fun, device, replacement=replacement, min_prob=min_prob)
+    return models, inliers, choice_vec, distances
 
 
 def sample_model(data, num_data, inlier_fun, cardinality, probs, model_gen_fun, consistency_fun, device=None,
@@ -124,14 +129,17 @@ def sample_models_parallel(data, num_data, inlier_fun, cardinality, sample_count
                   device=None, replacement=False, min_prob=0.):
     P = probs.size(0)
     S = probs.size(1)
-    Y = probs.size(2)
-    choice_vec = torch.zeros((P, S, Y), device=device)
-    choices = torch.zeros((P, S, cardinality), device=device, dtype=torch.long)
-    for pi in range(P):
-        choice_weights = probs[pi, :, 0:num_data] + min_prob
-        choice = torch.multinomial(choice_weights, cardinality, replacement=replacement)
-        choices[pi] = choice
-        choice_vec[pi, :, choice] = 1
+    K = probs.size(2)
+    Y = probs.size(3)
+
+    choice_vec = torch.zeros((P, S, K, Y), device=device)
+    choices = torch.zeros((P, S, K, cardinality), device=device, dtype=torch.long)
+    for ki in range(K):
+        for pi in range(P):
+            choice_weights = probs[pi, :, ki, 0:num_data] + min_prob
+            choice = torch.multinomial(choice_weights, cardinality, replacement=replacement)
+            choices[pi, :, ki] = choice
+            choice_vec[pi, :, ki, choice] = 1
 
     models = model_gen_fun(data, choices, device, sample_count=sample_count)
 
@@ -139,6 +147,50 @@ def sample_models_parallel(data, num_data, inlier_fun, cardinality, sample_count
         count_inliers(data[0:num_data, :], models, inlier_fun, consistency_fun, device)
 
     return models, choice_vec, all_inliers, all_counts, all_distances
+
+
+def sample_models_parallel_batched(data, num_data, inlier_fun, cardinality, sample_count, probs, model_gen_fun, consistency_fun,
+                  device=None, replacement=False, min_prob=0.):
+    P = probs.size(0)
+    S = probs.size(1)
+    K = probs.size(2)
+    B = probs.size(3)
+    Y = probs.size(4)
+
+    choice_vec = torch.zeros((P, S, K, B, Y), device=device)
+    choices = torch.zeros((P, S, K, B, cardinality), device=device, dtype=torch.long)
+    for ki in range(K):
+        for pi in range(P):
+            for bi in range(B):
+                choice_weights = probs[pi, :, ki, bi, 0:num_data[bi]] + min_prob
+                choice = torch.multinomial(choice_weights, cardinality, replacement=replacement)
+                choices[pi, :, ki, bi] = choice
+                choice_vec[pi, :, ki, bi, choice] = 1
+
+    models = model_gen_fun(data, choices, device, sample_count=sample_count)
+
+    all_inliers, all_counts, all_distances = \
+        count_inliers_batched(data, models, inlier_fun, consistency_fun, num_data, device)
+
+    return models, choice_vec, all_inliers, all_counts, all_distances
+
+
+def count_inliers_batched(data, model, inlier_fun, consistency_fun, num_data, device=None):
+    P = model.size(0)
+    S = model.size(1)
+    K = model.size(2)
+    B = model.size(3)
+    Y = data.size(1)
+    all_inliers = torch.zeros((P, S, K, B, Y), device=device)
+    all_distances = torch.ones((P, S, K, B, Y), device=device) * (-1)
+    for bi in range(B):
+        distances = consistency_fun(model[:, :, :, bi], data[bi, :num_data[bi]], device)
+        inliers = inlier_fun(distances)
+        all_inliers[:, :, :, bi, :num_data[bi]] = inliers
+        all_distances[:, :, :, bi, :num_data[bi]] = distances
+    inlier_count = all_inliers.sum(-1)
+
+    return all_inliers, inlier_count, all_distances
 
 
 def count_inliers(data, model, inlier_fun, consistency_fun, device=None):
@@ -210,53 +262,58 @@ def homography_from_points(data, choice, device, n_matches=4):
     return h
 
 
-def homographies_from_points(data, choice, device, n_matches=4, sample_count=1):
-    A = torch.zeros((sample_count, 2 * n_matches + 1, 9), device=device)
-    for si in range(sample_count):
-        for i in range(n_matches):
-            A[si, 2 * i, 3:5] = data[choice[si, i], 0:2] * (-1)
-            A[si, 2 * i, 5] = -1
-            A[si, 2 * i, 6:8] = data[choice[si, i], 0:2] * data[choice[si, i], 3]
-            A[si, 2 * i, 8] = data[choice[si, i], 3]
-            A[si, 2 * i + 1, 0:2] = data[choice[si, i], 0:2]
-            A[si, 2 * i + 1, 2] = 1
-            A[si, 2 * i + 1, 6:8] = data[choice[si, i], 0:2] * data[choice[si, i], 2] * (-1)
-            A[si, 2 * i + 1, 8] = -data[choice[si, i], 2]
-
-    u, s, v = torch.svd(A.cpu())
-    h = v[:, :, -1].to(device)
-
-    return h
-
-
-def multiple_svds(matrix):
-    u, s, v = torch.svd(matrix)
-    h = v[:, :, -1]
-    return h
-
-
 def homographies_from_points_parallel(data, choice, device, n_matches=4, sample_count=1):
     P = choice.size(0)
     S = choice.size(1)
+    K = choice.size(2)
 
-    A = torch.zeros((P, S, 2 * n_matches + 1, 9), device=device)
+    A = torch.zeros((P, S, K, 2 * n_matches + 1, 9), device=device)
     for i in range(n_matches):
-        A[:, :, 2 * i, 5] = -1
-        A[:, :, 2 * i + 1, 2] = 1
-        A[:, :, 2 * i, 3:5] = data[choice[:, :, i], 0:2] * (-1)
-        A[:, :, 2 * i, 6:8] = data[choice[:, :, i], 0:2]
-        A[:, :, 2 * i, 6] *= data[choice[:, :, i], 3]
-        A[:, :, 2 * i, 7] *= data[choice[:, :, i], 3]
-        A[:, :, 2 * i, 8] = data[choice[:, :, i], 3]
-        A[:, :, 2 * i + 1, 0:2] = data[choice[:, :, i], 0:2]
-        A[:, :, 2 * i + 1, 6:8] = data[choice[:, :, i], 0:2] * (-1)
-        A[:, :, 2 * i + 1, 6] *= data[choice[:, :, i], 2]
-        A[:, :, 2 * i + 1, 7] *= data[choice[:, :, i], 2]
-        A[:, :, 2 * i + 1, 8] = -data[choice[:, :, i], 2]
+        A[:, :, :, 2 * i, 5] = -1
+        A[:, :, :, 2 * i + 1, 2] = 1
+        A[:, :, :, 2 * i, 3:5] = data[choice[:, :, :, i], 0:2] * (-1)
+        A[:, :, :, 2 * i, 6:8] = data[choice[:, :, :, i], 0:2]
+        A[:, :, :, 2 * i, 6] *= data[choice[:, :, :, i], 3]
+        A[:, :, :, 2 * i, 7] *= data[choice[:, :, :, i], 3]
+        A[:, :, :, 2 * i, 8] = data[choice[:, :, :, i], 3]
+        A[:, :, :, 2 * i + 1, 0:2] = data[choice[:, :, :, i], 0:2]
+        A[:, :, :, 2 * i + 1, 6:8] = data[choice[:, :, :, i], 0:2] * (-1)
+        A[:, :, :, 2 * i + 1, 6] *= data[choice[:, :, :, i], 2]
+        A[:, :, :, 2 * i + 1, 7] *= data[choice[:, :, :, i], 2]
+        A[:, :, :, 2 * i + 1, 8] = -data[choice[:, :, :, i], 2]
 
     B = A.cpu()
     u, s, v = torch.svd(B)
-    h = v[:, :, :, -1].to(device)
+    h = v[:, :, :, :, -1].to(device)
+
+    return h
+
+
+def homographies_from_points_parallel_batched(data, choice, device, n_matches=4, sample_count=1):
+    P = choice.size(0)
+    S = choice.size(1)
+    K = choice.size(2)
+    B = choice.size(3)
+
+    A = torch.zeros((P, S, K, B, 2 * n_matches + 1, 9), device=device)
+    for bi in range(B):
+        for i in range(n_matches):
+            A[:, :, :, bi, 2 * i, 5] = -1
+            A[:, :, :, bi, 2 * i + 1, 2] = 1
+            A[:, :, :, bi, 2 * i, 3:5] = data[bi, choice[:, :, :, bi, i], 0:2] * (-1)
+            A[:, :, :, bi, 2 * i, 6:8] = data[bi, choice[:, :, :, bi, i], 0:2]
+            A[:, :, :, bi, 2 * i, 6] *= data[bi, choice[:, :, :, bi, i], 3]
+            A[:, :, :, bi, 2 * i, 7] *= data[bi, choice[:, :, :, bi, i], 3]
+            A[:, :, :, bi, 2 * i, 8] = data[bi, choice[:, :, :, bi, i], 3]
+            A[:, :, :, bi, 2 * i + 1, 0:2] = data[bi, choice[:, :, :, bi, i], 0:2]
+            A[:, :, :, bi, 2 * i + 1, 6:8] = data[bi, choice[:, :, :, bi, i], 0:2] * (-1)
+            A[:, :, :, bi, 2 * i + 1, 6] *= data[bi, choice[:, :, :, bi, i], 2]
+            A[:, :, :, bi, 2 * i + 1, 7] *= data[bi, choice[:, :, :, bi, i], 2]
+            A[:, :, :, bi, 2 * i + 1, 8] = -data[bi, choice[:, :, :, bi, i], 2]
+
+    B = A.cpu()
+    u, s, v = torch.svd(B)
+    h = v[:, :, :, :, :, -1].to(device)
 
     return h
 
@@ -296,39 +353,7 @@ def homography_consistency_measure(h, data, device, return_transformed=False):
         return distances
 
 
-def homographies_consistency_measure(h, data, device):
-    H = h.view(-1, 1, 3, 3)
-    I = torch.eye(3, device=device).view(1, 1, 3, 3).expand(H.size(0), H.size(1), 3, 3)
-    det = torch.det(H).view(-1, 1, 1, 1)
-    H_ = torch.where(det < 1e-12, I, H)
-    Hinv = torch.inverse(H_)
-    x1 = data[:, 0:2]
-    x2 = data[:, 2:4]
-    X1 = torch.ones((1, data.size(0), 3, 1), device=device)
-    X2 = torch.ones((1, data.size(0), 3, 1), device=device)
-    X1[0, :, 0:2, 0] = x1
-    X2[0, :, 0:2, 0] = x2
-
-    HX1 = torch.matmul(H, X1)
-    HX1[:, :, 0, 0] /= torch.clamp(HX1[:, :, 2, 0], min=1e-8)
-    HX1[:, :, 1, 0] /= torch.clamp(HX1[:, :, 2, 0], min=1e-8)
-    HX1[:, :, 2, 0] /= torch.clamp(HX1[:, :, 2, 0], min=1e-8)
-    HX2 = torch.matmul(Hinv, X2)
-    HX2[:, :, 0, 0] /= torch.clamp(HX2[:, :, 2, 0], min=1e-8)
-    HX2[:, :, 1, 0] /= torch.clamp(HX2[:, :, 2, 0], min=1e-8)
-    HX2[:, :, 2, 0] /= torch.clamp(HX2[:, :, 2, 0], min=1e-8)
-
-    signed_distances_1 = HX1 - X2
-    distances_1 = (signed_distances_1 * signed_distances_1).sum(dim=2).squeeze()
-    signed_distances_2 = HX2 - X1
-    distances_2 = (signed_distances_2 * signed_distances_2).sum(dim=2).squeeze()
-
-    distances = distances_1 + distances_2
-
-    return distances
-
-
-def homographies_consistency_measure_parallel(h, data, device):
+def homographies_consistency_measure_parallel_2dim(h, data, device):
     P = h.size(0)
     S = h.size(1)
 
@@ -357,6 +382,42 @@ def homographies_consistency_measure_parallel(h, data, device):
     distances_1 = (signed_distances_1 * signed_distances_1).sum(dim=3).squeeze()
     signed_distances_2 = HX2 - X1
     distances_2 = (signed_distances_2 * signed_distances_2).sum(dim=3).squeeze()
+
+    distances = distances_1 + distances_2
+
+    return distances
+
+
+def homographies_consistency_measure_parallel_3dim(h, data, device):
+    P = h.size(0)
+    S = h.size(1)
+    K = h.size(2)
+
+    H = h.view(P, S, K, 1, 3, 3)
+    I = torch.eye(3, device=device).view(1, 1, 1, 1, 3, 3).expand(H.size(0), H.size(1), H.size(2), H.size(3), 3, 3)
+    det = torch.det(H).view(P, S, K, 1, 1, 1)
+    H_ = torch.where(det < 1e-12, I, H)
+    Hinv = torch.inverse(H_)
+    x1 = data[:, 0:2]
+    x2 = data[:, 2:4]
+    X1 = torch.ones((1, 1, 1, data.size(0), 3, 1), device=device)
+    X2 = torch.ones((1, 1, 1, data.size(0), 3, 1), device=device)
+    X1[0, 0, 0, :, 0:2, 0] = x1
+    X2[0, 0, 0, :, 0:2, 0] = x2
+
+    HX1 = torch.matmul(H, X1)
+    HX1[:, :, :, :, 0, 0] /= torch.clamp(HX1[:, :, :, :, 2, 0], min=1e-8)
+    HX1[:, :, :, :, 1, 0] /= torch.clamp(HX1[:, :, :, :, 2, 0], min=1e-8)
+    HX1[:, :, :, :, 2, 0] /= torch.clamp(HX1[:, :, :, :, 2, 0], min=1e-8)
+    HX2 = torch.matmul(Hinv, X2)
+    HX2[:, :, :, :, 0, 0] /= torch.clamp(HX2[:, :, :, :, 2, 0], min=1e-8)
+    HX2[:, :, :, :, 1, 0] /= torch.clamp(HX2[:, :, :, :, 2, 0], min=1e-8)
+    HX2[:, :, :, :, 2, 0] /= torch.clamp(HX2[:, :, :, :, 2, 0], min=1e-8)
+
+    signed_distances_1 = HX1 - X2
+    distances_1 = (signed_distances_1 * signed_distances_1).sum(dim=4).squeeze()
+    signed_distances_2 = HX2 - X1
+    distances_2 = (signed_distances_2 * signed_distances_2).sum(dim=4).squeeze()
 
     distances = distances_1 + distances_2
 

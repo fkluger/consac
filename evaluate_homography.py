@@ -21,7 +21,7 @@ parser = argparse.ArgumentParser(
     description='',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-parser.add_argument('--dataset_path', default="/data/scene_understanding/AdelaideRMF/adelaidermf",
+parser.add_argument('--dataset_path', default="./datasets/adelaidermf",
                     help='Dataset directory')
 parser.add_argument('--ckpt', default='models/consac-s_homography.net', help='path to NN weights')
 parser.add_argument('--threshold', '-t', type=float, default=0.0001, help='tau - inlier threshold')
@@ -29,7 +29,7 @@ parser.add_argument('--threshold2', type=float, default=0.003, help='theta - inl
 parser.add_argument('--inlier_cutoff', type=float, default=6, help='Theta - inlier cutoff')
 parser.add_argument('--hyps', '-hyps', type=int, default=100, help='S - inner hypotheses (single instance hypotheses)')
 parser.add_argument('--outerhyps', type=int, default=100, help='P - outer hypotheses (multi-hypotheses)')
-parser.add_argument('--runcount', type=int, default=1, help='Number of runs')
+parser.add_argument('--runcount', type=int, default=5, help='Number of runs')
 parser.add_argument('--resblocks', '-rb', type=int, default=6, help='CNN residual blocks')
 parser.add_argument('--instances', type=int, default=6, help='Max. number of instances')
 parser.add_argument('--em', type=int, default=10, help='Number of EM iterations')
@@ -149,12 +149,12 @@ for data, num_data, masks, labels, images in valset_loader:
                 sampling_start = time.time()
                 all_probs[:, mi, :num_data[bi]] = probs
 
-                cur_probs = probs.view(P, 1, Y).expand((P, S, Y))
+                cur_probs = probs.view(P, 1, 1, Y).expand((P, S, 1, Y))
                 models, inliers, choices, distances = \
                     sampling.sample_model_pool_multiple_parallel(data[bi], num_data[bi], 4, inlier_fun1,
-                                                        sampling.homographies_from_points_parallel,
-                                                        sampling.homographies_consistency_measure_parallel, cur_probs,
-                                                        device=device, model_size=9, sample_count=S)
+                                                                 sampling.homographies_from_points_parallel,
+                                                                 sampling.homographies_consistency_measure_parallel_3dim, cur_probs,
+                                                                 device=device, model_size=9, sample_count=S)
 
                 sampling_end = time.time()
                 sampling_time = sampling_end - sampling_start

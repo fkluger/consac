@@ -150,9 +150,9 @@ with torch.no_grad():
         cur_probs = probs.view(P, 1, Y).expand((P, S, Y))
         models, inliers, choices, distances = \
             sampling.sample_model_pool_multiple_parallel(data[0], Y, 4, inlier_fun1,
-                                                sampling.homographies_from_points_parallel,
-                                                sampling.homographies_consistency_measure_parallel, cur_probs,
-                                                device=device, model_size=9, sample_count=S)
+                                                         sampling.homographies_from_points_parallel,
+                                                         sampling.homographies_consistency_measure_parallel_2dim,
+                                                         cur_probs, device=device, model_size=9, sample_count=S)
 
         all_inliers[:, mi, :, 0:Y] = inliers.squeeze()[:, 0:Y]
         all_models[:, mi, :] = models.squeeze()
