@@ -147,7 +147,7 @@ with torch.no_grad():
 
         all_probs[:, mi, :Y] = probs
 
-        cur_probs = probs.view(P, 1, Y).expand((P, S, Y))
+        cur_probs = probs.view(P, 1, 1, Y).expand((P, S, 1, Y))
         models, inliers, choices, distances = \
             sampling.sample_model_pool_multiple_parallel(data[0], Y, 4, inlier_fun1,
                                                          sampling.homographies_from_points_parallel,
@@ -260,7 +260,7 @@ if True:
     pts2 = data_unscaled[:, 2:4]
 
     plt.figure(figsize=(22, 10))
-    fontsize = 26
+    fontsize = 20
 
     ax1 = plt.subplot2grid((3, 4), (0, 0))
     ax2 = plt.subplot2grid((3, 4), (0, 1))
@@ -292,7 +292,7 @@ if True:
     ax4.set_xticks([])
     ax4.set_yticks([])
 
-    ms = 6
+    ms = 3
 
     for di in range(pts1.shape[0]):
         label = estm_labels[di]
