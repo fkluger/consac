@@ -37,7 +37,7 @@ python setup.py build_ext --inplace
 ```
 For the demo, OpenCV is required as well:
 ```
-pip install opencv-contrib-python
+pip install opencv-contrib-python==3.4.0.12
 ```
 
 ## Datasets
