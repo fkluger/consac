@@ -99,6 +99,7 @@ for ri in range(opt.runcount):
         num_models = num_models.to(device)
         num_data = num_data.to(device)
         masks = masks.to(device)
+        gt_models = gt_models.to(device)
 
         gt_models = gt_models[bi, :num_models[bi]]
         gt_models_mat = np.matrix(gt_models.cpu())
