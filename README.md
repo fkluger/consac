@@ -1,5 +1,7 @@
 # CONSAC: Robust Multi-Model Fitting by Conditional Sample Consensus
 
+[![CONSAC teaser video](http://img.youtube.com/vi/Fl_LXtC7A2E/0.jpg)](https://www.youtube.com/watch?v=Fl_LXtC7A2E "CONSAC CVPR teaser video")
+
 If you use this code, please cite [our paper](https://arxiv.org/abs/2001.02643):
 ```
 @inproceedings{kluger2020consac,
