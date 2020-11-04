@@ -118,7 +118,7 @@ def sample_models(data, num_data, inlier_fun, cardinality, sample_count, probs, 
     for si in range(sample_count):
         choice_vec[si, choice[si]] = 1
 
-    models = model_gen_fun(data, choice, device, sample_count=sample_count)
+    models = model_gen_fun(data, choice, device)
 
     inliers, inlier_count, distances = count_inliers(data[0:num_data, :], models, inlier_fun, consistency_fun, device)
 
@@ -141,7 +141,7 @@ def sample_models_parallel(data, num_data, inlier_fun, cardinality, sample_count
             choices[pi, :, ki] = choice
             choice_vec[pi, :, ki, choice] = 1
 
-    models = model_gen_fun(data, choices, device, sample_count=sample_count)
+    models = model_gen_fun(data, choices, device)
 
     all_inliers, all_counts, all_distances = \
         count_inliers(data[0:num_data, :], models, inlier_fun, consistency_fun, device)
@@ -167,7 +167,7 @@ def sample_models_parallel_batched(data, num_data, inlier_fun, cardinality, samp
                 choices[pi, :, ki, bi] = choice
                 choice_vec[pi, :, ki, bi, choice] = 1
 
-    models = model_gen_fun(data, choices, device, sample_count=sample_count)
+    models = model_gen_fun(data, choices, device)
 
     all_inliers, all_counts, all_distances = \
         count_inliers_batched(data, models, inlier_fun, consistency_fun, num_data, device)
@@ -216,6 +216,40 @@ def vp_consistency_measure_angle(vp, data, device):
     return distances
 
 
+def vp_consistency_measure_angle_batched(vp, data, device):
+    Y = data.size(0)
+    P, S, K, _ = vp.size()
+
+    centroids = data[:, 9:12].view(1, 1, 1, Y, 3).expand(P, S, K, Y, 3).clone()
+    lines = data[:, 6:9].view(1, 1, 1, Y, 3).expand(P, S, K, Y, 3).clone()
+
+    vp_ex = vp.view(P, S, K, 1, 3).expand(P, S, K, Y, 3)
+
+    constrained_lines = torch.cross(centroids, vp_ex, dim=-1)
+    con_line_norms = torch.norm(constrained_lines[..., 0:2], dim=-1).unsqueeze_(-1).expand(constrained_lines.size())
+    constrained_lines /= (con_line_norms + 1e-8)
+    line_norms = torch.norm(lines[..., 0:2], dim=-1).unsqueeze_(-1).expand(lines.size())
+    lines /= (line_norms + 1e-8)
+    distances = 1 - torch.abs(torch.mul(lines[..., 0:2], constrained_lines[..., 0:2]).sum(dim=-1))
+
+    return distances
+
+
+def vp_consistency_measure_angle_2dim(vp, data, device):
+    centroids = data[:, 9:12]
+    lines = data[:, 6:9]
+
+    vp_ex = vp.expand(centroids.size())
+    constrained_lines = torch.cross(centroids, vp_ex)
+    con_line_norms = torch.norm(constrained_lines[:, 0:2], dim=1).unsqueeze_(-1).expand(constrained_lines.size())
+    constrained_lines /= (con_line_norms + 1e-8)
+    line_norms = torch.norm(lines[:, 0:2], dim=1).unsqueeze_(-1).expand(lines.size())
+    lines /= (line_norms + 1e-8)
+    distances = 1 - torch.abs(torch.mul(lines[:, 0:2], constrained_lines[:, 0:2]).sum(dim=1))
+
+    return distances
+
+
 def vp_consistency_measure_angle_np(vp, data):
     centroids = data[:, 9:12]
     lines = data[:, 6:9]
@@ -245,6 +279,25 @@ def vp_from_lines(data, choice, device):
     return vp
 
 
+def vp_from_lines_batched(data, choice, device):
+    P, S, K, mss = choice.size()
+    Y, ddim = data.size()
+    data_ = data.view(1, 1, 1, Y, ddim).expand(P, S, K, Y, ddim)
+
+    datum1 = torch.gather(data_, 3, choice[:, :, :, 0].view(P, S, K, 1, 1).expand(P, S, K, 1, ddim))[:, :, :, 0, 6:9]
+    datum2 = torch.gather(data_, 3, choice[:, :, :, 1].view(P, S, K, 1, 1).expand(P, S, K, 1, ddim))[:, :, :, 0, 6:9]
+
+    # datum1 = data[choice[0], 6:9]
+    # datum2 = data[choice[1], 6:9]
+
+    vp = torch.cross(datum1, datum2, dim=-1)
+
+    vp_norm = torch.norm(vp, keepdim=True, dim=-1) + 1e-8
+    vp = vp / vp_norm
+
+    return vp
+
+
 def homography_from_points(data, choice, device, n_matches=4):
     A = torch.zeros((2 * n_matches + 1, 9), device=None)
     for i in range(n_matches):
@@ -262,7 +315,7 @@ def homography_from_points(data, choice, device, n_matches=4):
     return h
 
 
-def homographies_from_points_parallel(data, choice, device, n_matches=4, sample_count=1):
+def homographies_from_points_parallel(data, choice, device, n_matches=4):
     P = choice.size(0)
     S = choice.size(1)
     K = choice.size(2)

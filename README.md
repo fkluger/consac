@@ -76,12 +76,23 @@ rm traindata.tar.gz
 Refer to the NG-RANSAC documentation for details about the dataset.
 
 ## Demo
+
+### Homography Estimation
 For a homography estimation demo, run:
 ```
-python demo.py --img1 demo/img1.jpg  --img2 demo/img2.jpg 
+python demo.py --problem homography --defaults 
 ```
 You should get a result similar to this:
 ![example result](demo/example_result.jpg)
+
+### Vanishing Point Estimation
+For a vanishing point estimation demo, run:
+```
+python demo.py --problem vp --defaults 
+```
+You should get a result similar to this:
+![example result](demo/example_result_vps.jpg)
+
 You can also use your own images as input. Check ```python demo.py --help``` for a list of user-definable parameters.
 
 ## Evaluation
@@ -130,3 +141,9 @@ Train CONSAC-S for homography estimation on the SfM data:
 ```
 python train_homography.py --calr --fair_sampling --gpu GPU_ID
 ```
+___
+### Additional References
+ The vanishing point example image shows a landmark in Hannover, Germany:
+* [Nord LB](https://www.flickr.com/photos/dierkschaefer/5999546112/in/photolist-6EywNopdpBA8-a97hon-eQ6474-a9acHm-a9a9AG-a9af3d-R5SNyF-a97tck-eQhHCJ-fruEuZ-eQi2tEeQhk8d-qnVgrW-24fRi2L-eQhyxE-bymrtQ-kU7Apk-a9a74Y-2bxix-PRf3sv-SXwgoU-dyUjRCjbB22-rgmqm-24awG1H-4zjzyq-TMEpHD-Rer4CD-rt82Av-rgiWa)
+
+ The Python implementation of the LSD line segment detector was originally taken from here: [github.com/xanxys/lsd-python](https:/github.com/xanxys/lsd-python)
