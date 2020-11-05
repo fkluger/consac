@@ -62,7 +62,9 @@ store it under the ```datasets/yud_plus/data``` subfolder.
 
 
 ### AdelaideRMF
-The AdelaideRMF dataset can be obtained from [Hoi Sim Wong's website](https://cs.adelaide.edu.au/~hwong/doku.php?id=data).
+~~The AdelaideRMF dataset can be obtained from~~ [Hoi Sim Wong's website](https://cs.adelaide.edu.au/~hwong/doku.php?id=data).
+
+For now, we provide [a mirror here](https://cloud.tnt.uni-hannover.de/index.php/s/egE6y9KRMxcLg6T).
 
 ### SfM data
 We use the same pre-computed SIFT features of structure-from-motion datasets for self-supervised training on homography 
