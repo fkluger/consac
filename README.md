@@ -71,7 +71,7 @@ We use the same pre-computed SIFT features of structure-from-motion datasets for
 estimation which were also used for [NG-RANSAC](https://github.com/vislearn/ngransac). You can obtain them via:
 ```
 cd datasets
-wget -O traindata.tar.gz https://cloudstore.zih.tu-dresden.de/index.php/s/Gj28LoQjkf9qO5c/download
+wget -O traindata.tar.gz https://heidata.uni-heidelberg.de/api/access/datafile/:persistentId?persistentId=doi:10.11588/data/PCGYET/QZTF7P
 tar -xzvf traindata.tar.gz
 rm traindata.tar.gz
 ```
